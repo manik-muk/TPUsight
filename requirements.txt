@@ -1,0 +1,20 @@
+# Core dependencies
+jax>=0.4.20
+jaxlib>=0.4.20
+numpy>=1.24.0
+
+# Jupyter visualization
+jupyterlab>=4.0.0
+ipywidgets>=8.1.0
+plotly>=5.18.0
+
+# Styling and UI
+rich>=13.7.0
+humanize>=4.9.0
+
+# Data handling
+pandas>=2.1.0
+
+# Optional: For TPU-specific profiling
+# jax[tpu]>=0.4.20  # Uncomment when running on TPU
+
