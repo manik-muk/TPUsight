@@ -411,3 +411,227 @@ def print_live_status(profiler: "LiveProfiler"):
     
     print("=" * 60)
 
+
+class SimpleLiveDashboard:
+    """
+    Simple HTML-based live dashboard that works in any notebook.
+    
+    Uses IPython.display with clear_output for updates - no widgets needed.
+    Works in Colab, Colab via Cursor, JupyterLab, etc.
+    """
+    
+    def __init__(self, live_profiler: "LiveProfiler"):
+        self.profiler = live_profiler
+        self._is_running = False
+        self._update_thread: Optional[Thread] = None
+        self._mxu_history: List[float] = []
+        self._ops_history: List[float] = []
+    
+    def start(self, update_interval: float = 1.0):
+        """Start the live dashboard updates."""
+        from IPython.display import display, HTML, clear_output
+        
+        self._is_running = True
+        self._output_area = display(HTML("Starting..."), display_id=True)
+        
+        # Register metrics callback
+        self.profiler.on_metrics(self._on_metrics)
+        
+        # Start update thread
+        self._update_thread = Thread(
+            target=self._update_loop, 
+            args=(update_interval,), 
+            daemon=True
+        )
+        self._update_thread.start()
+    
+    def stop(self):
+        """Stop the dashboard updates."""
+        self._is_running = False
+        if self._update_thread:
+            self._update_thread.join(timeout=2.0)
+    
+    def _on_metrics(self, metrics: "LiveMetrics"):
+        """Store metrics for history."""
+        self._mxu_history.append(metrics.mxu_utilization)
+        self._ops_history.append(metrics.ops_per_second)
+        
+        # Keep last 30 points
+        if len(self._mxu_history) > 30:
+            self._mxu_history = self._mxu_history[-30:]
+            self._ops_history = self._ops_history[-30:]
+    
+    def _update_loop(self, interval: float):
+        """Background update loop."""
+        from IPython.display import HTML
+        
+        while self._is_running:
+            try:
+                html = self._render_html()
+                self._output_area.update(HTML(html))
+            except Exception:
+                pass
+            time.sleep(interval)
+    
+    def _render_html(self) -> str:
+        """Render the dashboard as HTML."""
+        metrics = self.profiler.get_current_metrics()
+        alerts = self.profiler.get_recent_alerts(5)
+        
+        # MXU color
+        if metrics.mxu_utilization >= 70:
+            mxu_color = "#3fb950"
+        elif metrics.mxu_utilization >= 50:
+            mxu_color = "#d29922"
+        else:
+            mxu_color = "#f85149"
+        
+        # Build sparkline from history
+        sparkline = self._render_sparkline(self._mxu_history)
+        
+        # Build alerts HTML
+        alerts_html = ""
+        if alerts:
+            for alert in reversed(alerts[-5:]):
+                severity_colors = {"critical": "#f85149", "warning": "#d29922", "info": "#58a6ff"}
+                color = severity_colors.get(alert.severity, "#58a6ff")
+                alerts_html += f'''
+                <div style="padding: 6px 10px; margin: 4px 0; background: rgba(255,255,255,0.05); 
+                            border-left: 3px solid {color}; border-radius: 0 4px 4px 0; font-size: 12px;">
+                    <strong style="color: {color};">{alert.category}</strong>: {alert.message}
+                </div>'''
+        else:
+            alerts_html = '<div style="color: #8b949e; padding: 10px;">No alerts</div>'
+        
+        # Recent ops
+        recent_ops = list(self.profiler._recent_ops)[-5:] if hasattr(self.profiler, '_recent_ops') else []
+        ops_html = ""
+        if recent_ops:
+            for op in reversed(recent_ops):
+                mxu_str = f"{op.mxu_utilization:.0f}%" if op.mxu_utilization else "-"
+                ops_html += f'''
+                <div style="padding: 4px 10px; border-bottom: 1px solid #30363d; font-size: 12px;">
+                    <span style="color: #58a6ff;">{op.name[:25]}</span>
+                    <span style="color: #8b949e; float: right;">
+                        {op.duration_ns/1e6:.1f}ms | MXU: {mxu_str}
+                    </span>
+                </div>'''
+        else:
+            ops_html = '<div style="color: #8b949e; padding: 10px;">No operations yet</div>'
+        
+        return f'''
+        <div style="font-family: 'SF Mono', 'Fira Code', monospace; background: #0f1419; 
+                    color: #e6edf3; padding: 20px; border-radius: 12px; max-width: 800px;">
+            
+            <!-- Header -->
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 20px; 
+                        padding-bottom: 16px; border-bottom: 1px solid #30363d;">
+                <span style="font-size: 24px; font-weight: 700; 
+                             background: linear-gradient(135deg, #f85149, #d29922);
+                             -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+                    TPUsight Live
+                </span>
+                <span style="background: #f85149; color: white; padding: 4px 12px; 
+                             border-radius: 12px; font-size: 11px; font-weight: 600;
+                             animation: pulse 2s infinite;">
+                    ● RECORDING
+                </span>
+            </div>
+            
+            <!-- Metrics Grid -->
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px;">
+                <div style="background: #232a33; padding: 16px; border-radius: 8px; border: 1px solid #30363d;">
+                    <div style="font-size: 28px; font-weight: 700;">{metrics.total_ops:,}</div>
+                    <div style="font-size: 11px; color: #8b949e; text-transform: uppercase;">Total Ops</div>
+                </div>
+                <div style="background: #232a33; padding: 16px; border-radius: 8px; border: 1px solid #30363d;">
+                    <div style="font-size: 28px; font-weight: 700;">{metrics.ops_per_second:.1f}</div>
+                    <div style="font-size: 11px; color: #8b949e; text-transform: uppercase;">Ops/sec</div>
+                </div>
+                <div style="background: #232a33; padding: 16px; border-radius: 8px; border: 1px solid #30363d;">
+                    <div style="font-size: 28px; font-weight: 700; color: {mxu_color};">{metrics.mxu_utilization:.0f}%</div>
+                    <div style="font-size: 11px; color: #8b949e; text-transform: uppercase;">MXU Util</div>
+                    <div style="height: 4px; background: #1a1f26; border-radius: 2px; margin-top: 8px;">
+                        <div style="height: 100%; width: {metrics.mxu_utilization}%; background: {mxu_color}; border-radius: 2px;"></div>
+                    </div>
+                </div>
+                <div style="background: #232a33; padding: 16px; border-radius: 8px; border: 1px solid #30363d;">
+                    <div style="font-size: 28px; font-weight: 700; color: {'#f85149' if metrics.active_alerts > 0 else '#e6edf3'};">
+                        {metrics.active_alerts}
+                    </div>
+                    <div style="font-size: 11px; color: #8b949e; text-transform: uppercase;">Alerts (60s)</div>
+                </div>
+            </div>
+            
+            <!-- MXU History Sparkline -->
+            <div style="background: #232a33; padding: 16px; border-radius: 8px; border: 1px solid #30363d; margin-bottom: 20px;">
+                <div style="font-size: 12px; color: #8b949e; margin-bottom: 8px;">MXU Utilization History</div>
+                {sparkline}
+            </div>
+            
+            <!-- Two columns -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <!-- Alerts -->
+                <div style="background: #232a33; padding: 16px; border-radius: 8px; border: 1px solid #30363d;">
+                    <div style="font-size: 12px; color: #8b949e; margin-bottom: 12px; text-transform: uppercase;">
+                        🚨 Recent Alerts
+                    </div>
+                    {alerts_html}
+                </div>
+                
+                <!-- Recent Ops -->
+                <div style="background: #232a33; padding: 16px; border-radius: 8px; border: 1px solid #30363d;">
+                    <div style="font-size: 12px; color: #8b949e; margin-bottom: 12px; text-transform: uppercase;">
+                        ⚡ Recent Operations
+                    </div>
+                    {ops_html}
+                </div>
+            </div>
+        </div>
+        
+        <style>
+            @keyframes pulse {{
+                0%, 100% {{ opacity: 1; }}
+                50% {{ opacity: 0.5; }}
+            }}
+        </style>
+        '''
+    
+    def _render_sparkline(self, values: List[float], width: int = 100, height: int = 40) -> str:
+        """Render a simple SVG sparkline."""
+        if not values or len(values) < 2:
+            return '<div style="color: #8b949e; font-size: 12px;">Collecting data...</div>'
+        
+        # Normalize values
+        min_val = min(values)
+        max_val = max(values)
+        range_val = max_val - min_val if max_val != min_val else 1
+        
+        # Create points
+        points = []
+        for i, v in enumerate(values):
+            x = i * (width / (len(values) - 1)) if len(values) > 1 else 0
+            y = height - ((v - min_val) / range_val * height)
+            points.append(f"{x:.1f},{y:.1f}")
+        
+        # Area fill points (close the path)
+        area_points = points + [f"{width},{height}", f"0,{height}"]
+        
+        return f'''
+        <svg width="100%" height="{height + 20}" viewBox="0 0 {width} {height + 10}" preserveAspectRatio="none">
+            <!-- Area fill -->
+            <polygon points="{' '.join(area_points)}" fill="rgba(88, 166, 255, 0.2)" />
+            <!-- Line -->
+            <polyline points="{' '.join(points)}" fill="none" stroke="#58a6ff" stroke-width="2" />
+            <!-- Threshold lines -->
+            <line x1="0" y1="{height - 70/100*height}" x2="{width}" y2="{height - 70/100*height}" 
+                  stroke="#3fb950" stroke-width="1" stroke-dasharray="4" opacity="0.5" />
+            <line x1="0" y1="{height - 50/100*height}" x2="{width}" y2="{height - 50/100*height}" 
+                  stroke="#d29922" stroke-width="1" stroke-dasharray="4" opacity="0.5" />
+        </svg>
+        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #8b949e;">
+            <span>30s ago</span>
+            <span>now</span>
+        </div>
+        '''
+
