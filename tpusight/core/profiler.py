@@ -338,8 +338,255 @@ class TPUsight:
                         op.flops, op.mxu_utilization, op.padding_waste_pct
                     ])
         
+        elif format == "html":
+            html_content = self._generate_html_report()
+            with open(filepath, 'w') as f:
+                f.write(html_content)
+        
         else:
             raise ValueError(f"Unsupported export format: {format}")
+    
+    def _generate_html_report(self) -> str:
+        """Generate a standalone HTML report with charts."""
+        from tpusight.utils.helpers import format_bytes, format_flops, format_duration
+        
+        summary = self.get_summary()
+        doctor_diagnosis = self.doctor.diagnose()
+        systolic_analysis = self.systolic.analyze()
+        padding_analysis = self.padding.analyze()
+        cache_analysis = self.cache.analyze()
+        
+        # Build operations table rows
+        ops_rows = ""
+        for op in self.profile_data.operations[:50]:  # Limit to 50
+            mxu = f"{op.mxu_utilization:.1f}%" if op.mxu_utilization else "-"
+            padding = f"{op.padding_waste_pct:.1f}%" if op.padding_waste_pct else "-"
+            flops = format_flops(op.flops) if op.flops else "-"
+            ops_rows += f"""
+            <tr>
+                <td>{op.name}</td>
+                <td>{op.op_type.value}</td>
+                <td>{format_duration(op.duration_ns / 1e9)}</td>
+                <td>{flops}</td>
+                <td>{mxu}</td>
+                <td>{padding}</td>
+            </tr>"""
+        
+        # Build recommendations
+        recs_html = ""
+        for rec in doctor_diagnosis["top_recommendations"][:10]:
+            severity_colors = {"critical": "#f85149", "warning": "#d29922", "info": "#58a6ff"}
+            color = severity_colors.get(rec["severity"], "#58a6ff")
+            recs_html += f"""
+            <div class="issue" style="border-left-color: {color}">
+                <div class="issue-header">
+                    <span class="severity" style="background: {color}">{rec['severity'].upper()}</span>
+                    <strong>{rec['title']}</strong>
+                </div>
+                <p>{rec['message']}</p>
+                <p class="suggestion"><strong>Suggestion:</strong> {rec['suggestion']}</p>
+                {f'<p class="impact">Impact: {rec["impact_estimate"]}</p>' if rec.get("impact_estimate") else ''}
+            </div>"""
+        
+        # MXU metrics
+        mxu_util = systolic_analysis["metrics"].overall_utilization if systolic_analysis["status"] == "ok" else 0
+        
+        # Cache metrics  
+        cache_hit_rate = cache_analysis["metrics"].cache_hit_rate if cache_analysis["status"] == "ok" else 0
+        
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>TPUsight Report - {self.session_id}</title>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+            background: #0f1419;
+            color: #e6edf3;
+            padding: 24px;
+            line-height: 1.6;
+        }}
+        .container {{ max-width: 1400px; margin: 0 auto; }}
+        .header {{
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 32px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #30363d;
+        }}
+        .logo {{
+            font-size: 32px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #58a6ff, #a371f7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }}
+        .meta {{ color: #8b949e; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 32px; }}
+        .card {{
+            background: #232a33;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 20px;
+        }}
+        .card-title {{ color: #8b949e; font-size: 12px; text-transform: uppercase; margin-bottom: 8px; }}
+        .card-value {{ font-size: 28px; font-weight: 700; }}
+        .card-subtitle {{ color: #8b949e; font-size: 12px; margin-top: 4px; }}
+        .progress {{ height: 8px; background: #1a1f26; border-radius: 4px; margin-top: 12px; overflow: hidden; }}
+        .progress-bar {{ height: 100%; border-radius: 4px; }}
+        .section {{ margin-bottom: 32px; }}
+        .section-title {{ font-size: 20px; font-weight: 600; margin-bottom: 16px; }}
+        table {{ width: 100%; border-collapse: collapse; background: #232a33; border-radius: 8px; overflow: hidden; }}
+        th {{ background: #1a1f26; text-align: left; padding: 12px; color: #8b949e; font-weight: 600; }}
+        td {{ padding: 12px; border-bottom: 1px solid #30363d; }}
+        tr:hover {{ background: #1a1f26; }}
+        .health-score {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            font-size: 28px;
+            font-weight: 700;
+            background: {'linear-gradient(135deg, #3fb950, #2ea043)' if doctor_diagnosis['health_score'] >= 70 else 'linear-gradient(135deg, #d29922, #bb8009)' if doctor_diagnosis['health_score'] >= 50 else 'linear-gradient(135deg, #f85149, #cf222e)'};
+        }}
+        .issue {{
+            background: #1a1f26;
+            border-left: 3px solid;
+            padding: 16px;
+            margin-bottom: 12px;
+            border-radius: 0 8px 8px 0;
+        }}
+        .issue-header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }}
+        .severity {{ padding: 2px 8px; border-radius: 4px; font-size: 11px; color: white; }}
+        .suggestion {{ color: #8b949e; margin-top: 8px; }}
+        .impact {{ color: #58a6ff; font-size: 13px; margin-top: 4px; }}
+        .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
+        @media (max-width: 768px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <span class="logo">TPUsight</span>
+            <span class="meta">
+                Session: {self.session_id} |
+                Device: {summary['device']['type']} x{summary['device']['count']} |
+                Duration: {summary['duration_seconds']:.2f}s
+            </span>
+        </div>
+        
+        <div class="section">
+            <div class="grid">
+                <div class="card">
+                    <div class="card-title">Health Score</div>
+                    <div style="display: flex; align-items: center; gap: 16px;">
+                        <div class="health-score">{doctor_diagnosis['health_score']}</div>
+                        <div>
+                            <div class="card-value" style="font-size: 18px;">{doctor_diagnosis['health_status'].replace('_', ' ').title()}</div>
+                            <div class="card-subtitle">{doctor_diagnosis['critical_count']} critical, {doctor_diagnosis['warning_count']} warnings</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Total Operations</div>
+                    <div class="card-value">{summary['operations']['total']:,}</div>
+                    <div class="card-subtitle">{format_flops(summary['operations']['total_flops'])} total</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">MXU Utilization</div>
+                    <div class="card-value">{mxu_util:.1f}%</div>
+                    <div class="progress">
+                        <div class="progress-bar" style="width: {mxu_util}%; background: {'#3fb950' if mxu_util >= 70 else '#d29922' if mxu_util >= 50 else '#f85149'};"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Cache Hit Rate</div>
+                    <div class="card-value">{cache_hit_rate:.1f}%</div>
+                    <div class="progress">
+                        <div class="progress-bar" style="width: {cache_hit_rate}%; background: {'#3fb950' if cache_hit_rate >= 80 else '#d29922'};"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Peak Memory</div>
+                    <div class="card-value">{format_bytes(summary['memory']['peak_bytes'])}</div>
+                    <div class="card-subtitle">{summary['memory']['total_allocations']} allocations</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Total Time</div>
+                    <div class="card-value">{format_duration(summary['operations']['total_time_ns'] / 1e9)}</div>
+                    <div class="card-subtitle">Across all operations</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="two-col">
+            <div class="section">
+                <div class="section-title">🩺 Recommendations</div>
+                {recs_html if recs_html else '<p style="color: #8b949e;">No issues found - your code is well optimized!</p>'}
+            </div>
+            
+            <div class="section">
+                <div class="section-title">📊 Operations</div>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Duration</th>
+                                <th>FLOPS</th>
+                                <th>MXU Util</th>
+                                <th>Padding</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {ops_rows if ops_rows else '<tr><td colspan="6" style="text-align:center; color:#8b949e;">No operations recorded</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <div style="text-align: center; margin-top: 40px; color: #8b949e; font-size: 12px;">
+            Generated by TPUsight v0.1.0
+        </div>
+    </div>
+</body>
+</html>"""
+        return html
+    
+    def summary(self) -> None:
+        """Print a quick text summary to the console (works in any environment)."""
+        from tpusight.utils.helpers import format_bytes, format_flops, format_duration
+        
+        s = self.get_summary()
+        d = self.doctor.diagnose()
+        
+        print("=" * 60)
+        print(f"  TPUsight Summary - {self.session_id}")
+        print("=" * 60)
+        print(f"  Device: {s['device']['type']} x{s['device']['count']}")
+        print(f"  Health Score: {d['health_score']}/100 ({d['health_status']})")
+        print("-" * 60)
+        print(f"  Operations: {s['operations']['total']}")
+        print(f"  Total FLOPS: {format_flops(s['operations']['total_flops'])}")
+        print(f"  Total Time: {format_duration(s['operations']['total_time_ns'] / 1e9)}")
+        print(f"  Cache Hit Rate: {s['compilation']['cache_hit_rate'] * 100:.1f}%")
+        print(f"  Peak Memory: {format_bytes(s['memory']['peak_bytes'])}")
+        print("-" * 60)
+        print(f"  Issues: {d['critical_count']} critical, {d['warning_count']} warnings")
+        
+        if d['top_recommendations']:
+            print("\n  Top Recommendations:")
+            for i, rec in enumerate(d['top_recommendations'][:3], 1):
+                icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(rec['severity'], "⚪")
+                print(f"    {i}. {icon} {rec['message'][:60]}...")
+        
+        print("=" * 60)
     
     def __repr__(self) -> str:
         return (
