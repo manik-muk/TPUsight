@@ -28,11 +28,12 @@ from tpusight.utils.helpers import (
 )
 
 
-def get_op_type(op_name: str) -> OperationType:
-    """Determine operation type from name."""
+def get_op_type(op_name: str, input_shapes: Optional[List[Tuple[int, ...]]] = None) -> OperationType:
+    """Determine operation type from name and/or shapes."""
     op_name_lower = op_name.lower()
     
-    if any(x in op_name_lower for x in ["dot", "matmul", "gemm"]):
+    # Check by name first
+    if any(x in op_name_lower for x in ["dot", "matmul", "gemm", "linear", "dense"]):
         return OperationType.MATMUL
     elif any(x in op_name_lower for x in ["conv", "convolution"]):
         return OperationType.CONV
@@ -52,8 +53,17 @@ def get_op_type(op_name: str) -> OperationType:
         return OperationType.COLLECTIVE
     elif "custom" in op_name_lower:
         return OperationType.CUSTOM_CALL
-    else:
-        return OperationType.OTHER
+    
+    # If we have input shapes, try to infer from shapes
+    # Matmul pattern: two 2D+ tensors where lhs[-1] == rhs[-2]
+    if input_shapes and len(input_shapes) >= 2:
+        lhs, rhs = input_shapes[0], input_shapes[1]
+        if len(lhs) >= 2 and len(rhs) >= 2:
+            if lhs[-1] == rhs[-2]:
+                # Looks like a matmul pattern
+                return OperationType.MATMUL
+    
+    return OperationType.OTHER
 
 
 def calculate_matmul_flops(lhs_shape: Tuple[int, ...], rhs_shape: Tuple[int, ...]) -> int:
@@ -162,10 +172,11 @@ class JAXTracer:
         jitted_fn: Callable,
         fn_name: str,
         args: tuple,
-        kwargs: dict
+        kwargs: dict,
+        force_trace: bool = False
     ) -> Any:
         """Trace a single JIT-compiled function call."""
-        if not self._active:
+        if not self._active and not force_trace:
             return jitted_fn(*args, **kwargs)
         
         # Get input shapes and dtypes
@@ -263,7 +274,8 @@ class JAXTracer:
     ) -> OperationRecord:
         """Create an operation record with computed metrics."""
         
-        op_type = get_op_type(name)
+        # Pass input_shapes to help infer operation type
+        op_type = get_op_type(name, input_shapes)
         
         # Calculate FLOPS for matmul
         flops = None
@@ -341,7 +353,8 @@ class JAXTracer:
         
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            return self._trace_call(jitted, fn_name, args, kwargs)
+            # force_trace=True ensures decorator always records operations
+            return self._trace_call(jitted, fn_name, args, kwargs, force_trace=True)
         
         return wrapper
 
