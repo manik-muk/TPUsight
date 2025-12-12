@@ -6,6 +6,7 @@ from tpusight.analyzers.fusion import FusionAnalyzer
 from tpusight.analyzers.cache import CacheAnalyzer
 from tpusight.analyzers.memory import MemoryAnalyzer
 from tpusight.analyzers.doctor import TPUDoctor
+from tpusight.analyzers.time_breakdown import TimeBreakdownAnalyzer
 
 __all__ = [
     "SystolicAnalyzer",
@@ -14,5 +15,6 @@ __all__ = [
     "CacheAnalyzer",
     "MemoryAnalyzer",
     "TPUDoctor",
+    "TimeBreakdownAnalyzer",
 ]
 

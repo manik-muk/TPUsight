@@ -174,6 +174,9 @@ class TPUsight:
             elif name == "doctor":
                 from tpusight.analyzers.doctor import TPUDoctor
                 self._analyzers[name] = TPUDoctor(self.profile_data)
+            elif name == "time_breakdown":
+                from tpusight.analyzers.time_breakdown import TimeBreakdownAnalyzer
+                self._analyzers[name] = TimeBreakdownAnalyzer(self.profile_data)
         
         return self._analyzers[name]
     
@@ -206,6 +209,11 @@ class TPUsight:
     def doctor(self):
         """Access the TPU Doctor for optimization suggestions."""
         return self._get_analyzer("doctor")
+    
+    @property
+    def time_breakdown(self):
+        """Access the time breakdown analyzer (compute/memory/compilation)."""
+        return self._get_analyzer("time_breakdown")
     
     def dashboard(self, height: int = 800) -> Any:
         """
@@ -355,6 +363,46 @@ class TPUsight:
         systolic_analysis = self.systolic.analyze()
         padding_analysis = self.padding.analyze()
         cache_analysis = self.cache.analyze()
+        time_analysis = self.time_breakdown.analyze()
+        
+        # Build time breakdown bars
+        time_breakdown_html = ""
+        if time_analysis["status"] == "ok":
+            breakdown = time_analysis["breakdown"]
+            pct = time_analysis["percentages"]
+            color_map = {
+                "compute": "#3fb950",
+                "memory_wait": "#f85149",
+                "rematerialization": "#a371f7",
+                "compilation": "#d29922",
+                "host_to_device": "#58a6ff",
+                "device_to_host": "#58a6ff",
+                "collective": "#f778ba",
+                "other": "#8b949e",
+            }
+            
+            categories = [
+                ("Compute", breakdown.compute_ms, pct["compute"], "compute"),
+                ("Memory Wait", breakdown.memory_wait_ms, pct["memory_wait"], "memory_wait"),
+                ("Rematerialization", breakdown.rematerialization_ms, pct["rematerialization"], "rematerialization"),
+                ("Compilation", breakdown.compilation_ms, pct["compilation"], "compilation"),
+                ("Host↔Device", breakdown.host_to_device_ms + breakdown.device_to_host_ms, 
+                 pct["host_to_device"] + pct["device_to_host"], "host_to_device"),
+                ("Collective", breakdown.collective_ms, pct["collective"], "collective"),
+                ("Other", breakdown.other_ms, pct["other"], "other"),
+            ]
+            
+            for name, ms, percent, key in sorted(categories, key=lambda x: x[1], reverse=True):
+                if ms > 0.01:
+                    color = color_map.get(key, "#8b949e")
+                    time_breakdown_html += f'''
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                        <div style="width: 140px; color: #8b949e;">{name}</div>
+                        <div style="flex: 1; height: 20px; background: #1a1f26; border-radius: 4px; overflow: hidden; margin: 0 12px;">
+                            <div style="width: {percent}%; height: 100%; background: {color};"></div>
+                        </div>
+                        <div style="width: 100px; text-align: right;">{ms:.1f}ms ({percent:.1f}%)</div>
+                    </div>'''
         
         # Build operations table rows
         ops_rows = ""
@@ -523,6 +571,14 @@ class TPUsight:
             </div>
         </div>
         
+        <div class="section">
+            <div class="section-title">⏱️ Time Breakdown</div>
+            <div class="card">
+                {time_breakdown_html if time_breakdown_html else '<p style="color: #8b949e;">No timing data available</p>'}
+                {f'<div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #30363d; color: #8b949e;">Bottleneck: {time_analysis.get("bottleneck_description", "N/A")}</div>' if time_analysis["status"] == "ok" else ''}
+            </div>
+        </div>
+        
         <div class="two-col">
             <div class="section">
                 <div class="section-title">🩺 Recommendations</div>
@@ -565,6 +621,7 @@ class TPUsight:
         
         s = self.get_summary()
         d = self.doctor.diagnose()
+        t = self.time_breakdown.analyze()
         
         print("=" * 60)
         print(f"  TPUsight Summary - {self.session_id}")
@@ -577,6 +634,22 @@ class TPUsight:
         print(f"  Total Time: {format_duration(s['operations']['total_time_ns'] / 1e9)}")
         print(f"  Cache Hit Rate: {s['compilation']['cache_hit_rate'] * 100:.1f}%")
         print(f"  Peak Memory: {format_bytes(s['memory']['peak_bytes'])}")
+        
+        # Time breakdown
+        if t["status"] == "ok":
+            print("-" * 60)
+            print("  Time Breakdown:")
+            pct = t["percentages"]
+            for cat, name, icon in [
+                ("compute", "Compute", "🟢"),
+                ("memory_wait", "Memory Wait", "🔴"),
+                ("rematerialization", "Remat", "🟣"),
+                ("compilation", "Compilation", "🟡"),
+            ]:
+                if pct.get(cat, 0) > 0.5:
+                    print(f"    {icon} {name}: {pct[cat]:.1f}%")
+            print(f"  Bottleneck: {t['bottleneck']}")
+        
         print("-" * 60)
         print(f"  Issues: {d['critical_count']} critical, {d['warning_count']} warnings")
         
